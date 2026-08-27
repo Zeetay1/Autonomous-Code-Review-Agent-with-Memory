@@ -1,0 +1,21 @@
+services:
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Optional: enables live PR review via /webhook. The dashboard, /api/reviews
+      # and /api/stats work without these.
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - agent_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/dashboard')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  agent_data:
