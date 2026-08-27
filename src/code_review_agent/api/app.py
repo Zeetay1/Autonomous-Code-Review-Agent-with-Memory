@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -54,7 +55,17 @@ def create_app(
     review_history_memory: Optional[Any] = None,
 ) -> FastAPI:
     """Create FastAPI app. Inject run_agent_fn, github_client, store for tests."""
-    app = FastAPI(title="Code Review Agent")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Build the embedding model / Chroma / SQLite singletons at startup instead
+        # of on the first incoming request, so the first real user isn't the one who
+        # pays the cold-start cost. No-op for fully test-doubled apps.
+        if run_agent_fn is None or store is None or review_history_memory is None:
+            _get_services()
+        yield
+
+    app = FastAPI(title="Code Review Agent", lifespan=lifespan)
 
     def _run_agent(diff: str):
         if run_agent_fn:
@@ -97,7 +108,11 @@ def create_app(
             diff = client.get_pr_diff(parsed["owner"], parsed["repo"], parsed["pr_number"])
         except Exception:
             return Response(status_code=200)
-        result = _run_agent(diff)
+        try:
+            result = _run_agent(diff)
+        except Exception:
+            # e.g. missing ANTHROPIC_API_KEY in this environment; ack the webhook regardless.
+            return Response(status_code=200)
         formatted = result.get("formatted")
         if not formatted or not formatted.comments:
             return Response(status_code=200)
