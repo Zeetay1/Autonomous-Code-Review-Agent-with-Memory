@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import os
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -46,6 +48,50 @@ def _get_services():
     if _services is None:
         _services = _build_services()
     return _services
+
+
+# --- /api/try: public "try it yourself" endpoint guardrails ---
+# This is the only endpoint that makes an LLM call on behalf of an arbitrary,
+# unauthenticated visitor, so it gets its own cost/abuse controls: a per-IP sliding
+# window, a global daily cap (blunt spend safety net if the per-IP limit is evaded by
+# spreading requests across IPs), and an input size cap. In-memory and per-process,
+# which is a real limitation if this ever runs with >1 instance behind a load balancer
+# (see README) -- adequate for portfolio-demo traffic, not a substitute for real
+# infra-level rate limiting at higher volume.
+TRY_MAX_DIFF_CHARS = int(os.environ.get("DEMO_MAX_DIFF_CHARS", "20000"))
+TRY_RATE_LIMIT_PER_IP = int(os.environ.get("DEMO_RATE_LIMIT_PER_IP", "5"))
+TRY_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("DEMO_RATE_LIMIT_WINDOW_SECONDS", "600"))
+TRY_DAILY_REQUEST_CAP = int(os.environ.get("DEMO_DAILY_REQUEST_CAP", "200"))
+
+_try_request_times: dict[str, deque] = defaultdict(deque)
+_try_daily_count = {"day": None, "count": 0}
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_try_rate_limit(ip: str) -> Optional[str]:
+    """Return a user-facing error message if this request should be rejected, else None."""
+    now = time.time()
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    if _try_daily_count["day"] != today:
+        _try_daily_count["day"] = today
+        _try_daily_count["count"] = 0
+    if _try_daily_count["count"] >= TRY_DAILY_REQUEST_CAP:
+        return "This demo has hit its request limit for today. Please try again tomorrow."
+    dq = _try_request_times[ip]
+    while dq and now - dq[0] > TRY_RATE_LIMIT_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= TRY_RATE_LIMIT_PER_IP:
+        minutes = TRY_RATE_LIMIT_WINDOW_SECONDS // 60
+        return f"Rate limit: max {TRY_RATE_LIMIT_PER_IP} review requests per {minutes} minutes. Try again shortly."
+    dq.append(now)
+    _try_daily_count["count"] += 1
+    return None
 
 
 def create_app(
@@ -163,6 +209,39 @@ def create_app(
         except Exception:
             pass
         return Response(status_code=200)
+
+    @app.post("/api/try", response_class=JSONResponse)
+    async def api_try(request: Request) -> JSONResponse:
+        """Public 'try it yourself' endpoint: run the real review pipeline on
+        visitor-submitted diff text and return the result directly. Not persisted to
+        the dashboard's review history -- keeps arbitrary visitor input out of shared
+        demo state. Rate-limited (see module-level TRY_* constants)."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON body."})
+        diff = body.get("diff") if isinstance(body, dict) else None
+        if not isinstance(diff, str) or not diff.strip():
+            return JSONResponse(status_code=400, content={"error": "Provide a non-empty 'diff' field."})
+        if len(diff) > TRY_MAX_DIFF_CHARS:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Diff too large (max {TRY_MAX_DIFF_CHARS} characters)."},
+            )
+        rl_error = _check_try_rate_limit(_client_ip(request))
+        if rl_error:
+            return JSONResponse(status_code=429, content={"error": rl_error})
+        try:
+            result = _run_agent(diff)
+            formatted = result.get("formatted")
+        except Exception:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "The review agent failed to process this diff. This demo requires a server-side ANTHROPIC_API_KEY."},
+            )
+        if not formatted:
+            return JSONResponse(status_code=502, content={"error": "No review output produced."})
+        return JSONResponse(content=formatted.model_dump())
 
     @app.get("/api/reviews", response_class=JSONResponse)
     async def api_reviews() -> JSONResponse:

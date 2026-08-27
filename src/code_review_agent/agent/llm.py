@@ -1,6 +1,9 @@
 """Thin wrapper around Anthropic Claude for analyze/generate steps. Injectable for tests."""
 
+import os
 from typing import Optional
+
+DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
 
 
 def complete(prompt: str, system: Optional[str] = None) -> str:
@@ -8,7 +11,8 @@ def complete(prompt: str, system: Optional[str] = None) -> str:
     from anthropic import Anthropic
 
     client = Anthropic()
-    kwargs = {"model": "claude-3-5-sonnet-20241022", "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
+    model = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
+    kwargs = {"model": model, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
     if system:
         kwargs["system"] = system
     resp = client.messages.create(**kwargs)
