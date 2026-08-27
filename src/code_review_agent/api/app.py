@@ -108,7 +108,10 @@ def create_app(
         # of on the first incoming request, so the first real user isn't the one who
         # pays the cold-start cost. No-op for fully test-doubled apps.
         if run_agent_fn is None or store is None or review_history_memory is None:
-            _get_services()
+            svc_store, _, svc_review_history_memory, _ = _get_services()
+            if os.environ.get("SEED_DEMO_DATA", "").lower() in ("1", "true", "yes"):
+                from code_review_agent.demo_seed import seed_demo_data
+                seed_demo_data(svc_store, svc_review_history_memory)
         yield
 
     app = FastAPI(title="Code Review Agent", lifespan=lifespan)

@@ -74,9 +74,19 @@ docker compose up --build
 ```
 
 Then open `http://localhost:8000/dashboard`. The dashboard, `/api/reviews`, and
-`/api/stats` work with no configuration. To also let the container review real PRs and
-post GitHub comments, set `GITHUB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, and
-`ANTHROPIC_API_KEY` in a `.env` file before running (see [Limitations](#limitations--whats-next)).
+`/api/stats` work with no configuration, but start empty until something is reviewed.
+Two ways to see it populated:
+
+- **"Try it yourself"** on the dashboard: paste a diff, click Review — runs the real
+  pipeline and shows results live (requires `ANTHROPIC_API_KEY`; rate-limited, see
+  `POST /api/try` in `api/app.py`).
+- **Sample data**: `python scripts/seed_demo_data.py` (needs `PYTHONPATH=src`) inserts a
+  realistic sample PR review, including a pattern already past the 5-rejection threshold
+  — no API key needed, since it writes directly to the store rather than calling the LLM.
+
+To let the container review real PRs and post GitHub comments, set `GITHUB_TOKEN`,
+`GITHUB_WEBHOOK_SECRET`, and `ANTHROPIC_API_KEY` in a `.env` file before running (see
+[Limitations](#limitations--whats-next)).
 
 The image bakes in the embedding model at build time and runs with `HF_HUB_OFFLINE=1`,
 so the container needs no internet access at all to start or serve requests (verified
