@@ -8,21 +8,21 @@ version = "0.1.0"
 description = "Autonomous Code Review Agent with Memory"
 requires-python = ">=3.10"
 dependencies = [
-    "chromadb>=0.4.0",
-    "sentence-transformers>=2.2.0",
-    "pydantic>=2.0",
-    "langgraph>=0.2.0",
-    "anthropic>=0.18.0",
-    "PyGithub>=2.0.0",
-    "fastapi>=0.109.0",
-    "uvicorn>=0.27.0",
-    "httpx>=0.26.0",
+    "chromadb==1.5.2",
+    "sentence-transformers==5.2.3",
+    "pydantic==2.12.5",
+    "langgraph==1.0.10",
+    "anthropic==0.84.0",
+    "PyGithub==2.8.1",
+    "fastapi==0.135.1",
+    "uvicorn==0.41.0",
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-mock>=3.0",
+    "pytest==9.0.2",
+    "pytest-mock==3.15.1",
 ]
 
 [tool.setuptools.packages.find]
