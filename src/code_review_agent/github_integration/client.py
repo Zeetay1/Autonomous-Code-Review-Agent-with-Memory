@@ -25,7 +25,12 @@ class GitHubClient:
         headers = {}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-        with httpx.Client() as client:
+        with httpx.Client(follow_redirects=True) as client:
+            # diff_url (github.com/.../pull/N.diff) always 302s to
+            # patch-diff.githubusercontent.com; httpx strips Authorization on a
+            # cross-host redirect (correct default), so this only fully works
+            # unauthenticated -- fine for public repos, insufficient for private
+            # ones (see README limitations).
             resp = client.get(diff_url, headers=headers)
             resp.raise_for_status()
             return resp.text

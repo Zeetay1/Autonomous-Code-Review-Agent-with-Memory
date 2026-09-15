@@ -8,7 +8,7 @@ import os
 from typing import Optional
 
 DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 
 def complete(prompt: str, system: Optional[str] = None) -> str:
