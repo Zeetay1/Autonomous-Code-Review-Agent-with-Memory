@@ -62,8 +62,9 @@ GET /dashboard  --> reads SQLiteStore directly (recent reviews, counts by severi
 ## Tech stack
 
 Python 3.12 · LangGraph · ChromaDB (vector store) · sentence-transformers
-(`all-MiniLM-L6-v2` embeddings) · Anthropic API (Claude) · FastAPI + Uvicorn · PyGithub +
-httpx · SQLite · pytest · Docker.
+(`all-MiniLM-L6-v2` embeddings) · Anthropic API (Claude), with Groq as a pluggable
+alternative (`LLM_PROVIDER=groq`) · FastAPI + Uvicorn · PyGithub + httpx · SQLite ·
+pytest · Docker.
 
 ## Quickstart
 
@@ -169,7 +170,7 @@ set PYTHONPATH=src           # `export PYTHONPATH=src` on Linux/macOS
 pytest tests/ -v
 ```
 
-23 tests, no network access or API keys required — all LLM calls, embeddings, and Chroma
+36 tests, no network access or API keys required — all LLM calls, embeddings, and Chroma
 storage are mocked/in-memory in the test suite (`tests/conftest.py`). Same command runs
 in CI (`.github/workflows/ci.yml`) on every push/PR to `main`.
 
