@@ -22,15 +22,17 @@ GitHub PR event
 POST /webhook  (FastAPI) --- verifies HMAC signature ---> parse_pr_event()
       |
       v
-GitHubClient.get_pr_diff()  (PyGithub + httpx)
+GitHubClient.get_pr_diff()  (REST API diff media type, not diff_url -- see note below)
       |
       v
 LangGraph pipeline:  retrieve -> analyze -> generate -> format
       |                  |          |          |
-      |                  |          |          +--> cap blocking comments at 3, build ReviewOutput
-      |                  |          +--> Claude (Anthropic API) reviews diff + retrieved memory
-      |                  +--> ConventionMemory.query()      (Chroma: docs indexed by section)
-      |                       ReviewHistoryMemory.query()   (Chroma: past comments, outcome-weighted)
+      |                  |          |          +--> cap blocking comments (MAX_BLOCKING_COMMENTS), build ReviewOutput
+      |                  |          +--> Claude or Groq reviews diff + retrieved memory + this PR's own past comments
+      |                  +--> ConventionMemory.query()        (Chroma: docs indexed by section)
+      |                       ReviewHistoryMemory.query()     (Chroma: past comments, outcome-weighted)
+      |                       SQLiteStore.get_review_by_pr()  (this PR's own prior comments, so a second
+      |                                                        push to the same PR doesn't repeat itself)
       v
 GitHubClient.post_inline_review_comments()  --> inline PR comments
       |
@@ -41,8 +43,8 @@ SQLiteStore  (review_comments, pattern_rejections)
 POST /api/feedback  <-- developer accepts/rejects a comment on GitHub
       |
       +--> ReviewHistoryMemory.add()  (writes the outcome back into the vector store)
-      +--> after 5 rejections of the same normalized pattern, it is excluded from
-           future retrieval entirely (see REJECTION_THRESHOLD in review_history.py)
+      +--> after REJECTION_THRESHOLD rejections of the same normalized pattern, it is
+           excluded from future retrieval entirely (memory/review_history.py)
 
 GET /dashboard  --> reads SQLiteStore directly (recent reviews, counts by severity)
 ```
@@ -58,6 +60,13 @@ GET /dashboard  --> reads SQLiteStore directly (recent reviews, counts by severi
 | `persistence/sqlite_store.py` | Source of truth for comments, outcomes, and per-pattern rejection counts |
 | `github_integration/` | Webhook signature verification, PR event parsing, diff fetch, inline comment posting |
 | `api/app.py` | FastAPI app: `/webhook`, `/api/feedback`, `/api/reviews`, `/api/stats`, `/dashboard` |
+
+**Two independent kinds of memory:** `ReviewHistoryMemory` tracks accepted/rejected
+*patterns* permanently, across every PR in the repo (the `REJECTION_THRESHOLD`
+exclusion). Separately, each PR also remembers its *own* prior comments
+(`SQLiteStore.get_review_by_pr`, threaded into `retrieve_step` as `pr_reference`), purely
+so pushing a second commit to the same PR doesn't re-flag what it already said on the
+first pass — this one resets per PR, it's not a permanent exclusion like the other.
 
 ## Tech stack
 
@@ -75,25 +84,33 @@ docker compose up --build
 ```
 
 Then open `http://localhost:8000/dashboard`. The dashboard, `/api/reviews`, and
-`/api/stats` work with no configuration, but start empty until something is reviewed.
-Two ways to see it populated:
-
-- **"Try it yourself"** on the dashboard: paste a diff, click Review — runs the real
-  pipeline and shows results live (requires `ANTHROPIC_API_KEY`; rate-limited, see
-  `POST /api/try` in `api/app.py`).
-- **Sample data**: `python scripts/seed_demo_data.py` (needs `PYTHONPATH=src`) inserts a
-  realistic sample PR review, including a pattern already past the 5-rejection threshold
-  — no API key needed, since it writes directly to the store rather than calling the LLM.
-
-To let the container review real PRs and post GitHub comments, set `GITHUB_TOKEN`,
-`GITHUB_WEBHOOK_SECRET`, and `ANTHROPIC_API_KEY` in a `.env` file before running (see
-[Limitations](#limitations--whats-next)).
+`/api/stats` work with no configuration, but start empty until something is reviewed —
+run `python scripts/seed_demo_data.py` (needs `PYTHONPATH=src`) to populate it with a
+realistic sample PR review, including a pattern already past the rejection threshold.
+No API key needed, since it writes directly to the store rather than calling an LLM.
 
 The image bakes in the embedding model at build time and runs with `HF_HUB_OFFLINE=1`,
 so the container needs no internet access at all to start or serve requests (verified
 with `docker run --network none`). Startup takes ~10-15s while it loads the embedding
 model into memory; the dashboard and API are fully responsive once
 `Application startup complete` appears in the logs.
+
+**Connecting it to a real GitHub repo** (optional — the dashboard/demo above needs none
+of this):
+
+1. Copy `.env.example` to `.env` and fill in `GITHUB_TOKEN` (repo scope, or fine-grained
+   with Contents: read + Pull requests: read/write) and either `ANTHROPIC_API_KEY` or
+   `LLM_PROVIDER=groq` + `GROQ_API_KEY`.
+2. Your instance needs a URL GitHub can actually reach — `localhost` doesn't count. For
+   local testing, expose it with a tunnel (e.g. `ngrok http 8000` or
+   `npx localtunnel --port 8000`); for real use, deploy it somewhere with a stable public
+   URL.
+3. On the target repo: **Settings → Webhooks → Add webhook** → Payload URL =
+   `https://<your-url>/webhook`, content type `application/json`, event: "Pull requests".
+   Set the same value as `GITHUB_WEBHOOK_SECRET` in `.env` so payloads are verified.
+4. Open or push to a PR on that repo — it gets reviewed for real, with inline comments
+   posted directly on GitHub. (This exact flow is what found and fixed the redirect bug
+   in `GitHubClient.get_pr_diff` — verified against a live PR, not just mocked.)
 
 **Local dev alternative:**
 
@@ -176,9 +193,12 @@ in CI (`.github/workflows/ci.yml`) on every push/PR to `main`.
 
 ## Limitations / what's next
 
-- **No conversation-level review context.** Each diff is reviewed independently; the agent
-  doesn't see prior comments on the *same* PR when a new commit is pushed, so it can
-  repeat itself within one PR even though it learns across PRs via `ReviewHistoryMemory`.
+- **Private repos are untested beyond code review.** `get_pr_diff` fetches the diff
+  directly from `api.github.com` with the diff media type specifically so auth survives
+  (an earlier version used `pr.diff_url`, which redirects to a different host and drops
+  the auth header — see the comment in `github_integration/client.py`). This has been
+  verified end-to-end against a real *public* PR; it hasn't been exercised against an
+  actual private repo, so treat that path as reasoned-through rather than proven.
 - **`sentence-transformers` pulls in `torch`**, which is most of the Docker image's ~2.7GB
   (down from ~9.3GB by pinning the CPU-only torch build instead of the default wheel,
   which bundles ~6GB of unused CUDA runtime libs — see `requirements.txt`). Shrinking
@@ -188,10 +208,13 @@ in CI (`.github/workflows/ci.yml`) on every push/PR to `main`.
   this is standard for GitHub's own webhook payloads but means the deployment must bind
   the webhook secret per-repo (already supported via `GITHUB_WEBHOOK_SECRET`) rather than
   trusting payload contents alone.
-- **`MAX_BLOCKING = 3`** and **`REJECTION_THRESHOLD = 5`** (`agent/steps.py`,
-  `memory/review_history.py`) are fixed constants, not tuned or configurable per repo yet
-  — reasonable defaults for a demo, but a real deployment would want these as
-  per-repo settings.
 - **SQLite and Chroma are both local files.** Fine for a single-instance demo; a multi-instance
   production deployment would need Postgres + a hosted vector store (or Chroma's
   server mode) instead of `docker-compose.yml`'s single-volume setup.
+- **PR-level dedup only sees comments *this* agent already posted**, read back from
+  SQLite (`get_review_by_pr`) — it has no way to know about comments from a human
+  reviewer or a different tool on the same PR.
+
+`MAX_BLOCKING_COMMENTS` (default 3) and `REJECTION_THRESHOLD` (default 5) are
+configurable per deployment via environment variables (`agent/steps.py`,
+`memory/review_history.py`) rather than hardcoded.

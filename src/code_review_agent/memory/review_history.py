@@ -1,5 +1,6 @@
 """Review history memory: store past comments with outcomes; down-weight rejected at retrieval."""
 
+import os
 import re
 from typing import Any, Callable, List
 
@@ -16,7 +17,8 @@ def pattern_id_from_snippet(code_snippet: str) -> str:
 # Rejection count lookup: pattern_id -> count. Tests pass a dict; production uses SQLite.
 GetRejectionCount = Callable[[str], int]
 
-REJECTION_THRESHOLD = 5
+# Configurable per deployment (e.g. a stricter repo might want a lower threshold).
+REJECTION_THRESHOLD = int(os.environ.get("REJECTION_THRESHOLD", "5"))
 ACCEPTED_WEIGHT = 1.0
 REJECTED_WEIGHT = 0.2
 

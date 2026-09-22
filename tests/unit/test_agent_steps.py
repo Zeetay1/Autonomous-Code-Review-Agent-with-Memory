@@ -9,7 +9,9 @@ from code_review_agent.agent.steps import (
     KEY_ANALYSIS,
     KEY_COMMENTS,
     KEY_DIFF,
+    KEY_EXISTING_PR_COMMENTS,
     KEY_FORMATTED,
+    KEY_PR_REFERENCE,
     KEY_RETRIEVED_MEMORY,
     analyze_step,
     format_step,
@@ -30,6 +32,46 @@ def test_retrieve_step_returns_retrieved_memory(
     assert isinstance(out[KEY_RETRIEVED_MEMORY], RetrievedMemory)
     assert hasattr(out[KEY_RETRIEVED_MEMORY], "conventions")
     assert hasattr(out[KEY_RETRIEVED_MEMORY], "past_decisions")
+
+
+def test_retrieve_step_fetches_existing_pr_comments_when_pr_reference_given(
+    convention_memory, review_history_memory
+):
+    """A PR being re-reviewed (e.g. new commit pushed) surfaces its own past comments."""
+    get_existing = MagicMock(return_value=["Mutable default argument", "Missing docstring"])
+    state = {KEY_DIFF: "def foo(x): pass", KEY_PR_REFERENCE: "owner/repo#5"}
+    out = retrieve_step(
+        state, convention_memory, review_history_memory, get_existing_pr_comments=get_existing
+    )
+    get_existing.assert_called_once_with("owner/repo#5")
+    assert out[KEY_EXISTING_PR_COMMENTS] == ["Mutable default argument", "Missing docstring"]
+
+
+def test_retrieve_step_skips_existing_pr_lookup_without_pr_reference(
+    convention_memory, review_history_memory
+):
+    """No pr_reference (e.g. the CLI harness) means no lookup at all -- not even called."""
+    get_existing = MagicMock(return_value=["should not be returned"])
+    state = {KEY_DIFF: "def foo(x): pass"}
+    out = retrieve_step(
+        state, convention_memory, review_history_memory, get_existing_pr_comments=get_existing
+    )
+    get_existing.assert_not_called()
+    assert out[KEY_EXISTING_PR_COMMENTS] == []
+
+
+def test_analyze_step_includes_existing_pr_comments_in_prompt():
+    """Already-flagged comments on this PR reach the LLM prompt, so it can avoid repeats."""
+    mock_llm = MagicMock(return_value="[]")
+    state = {
+        KEY_DIFF: "def foo(x): pass",
+        KEY_RETRIEVED_MEMORY: RetrievedMemory(conventions=[], past_decisions=[]),
+        KEY_EXISTING_PR_COMMENTS: ["Mutable default argument on line 3"],
+    }
+    analyze_step(state, mock_llm)
+    prompt = mock_llm.call_args.args[0]
+    assert "Mutable default argument on line 3" in prompt
+    assert "Already flagged" in prompt
 
 
 def test_analyze_step_returns_analysis_with_mock_llm():

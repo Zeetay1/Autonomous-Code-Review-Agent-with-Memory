@@ -1,6 +1,7 @@
 """Agent steps: retrieve -> analyze -> generate -> format. Each reads state and returns updates."""
 
 import json
+import os
 import re
 from typing import Any, Callable
 
@@ -14,21 +15,31 @@ from code_review_agent.memory.retrieval import retrieve
 
 # State keys
 KEY_DIFF = "diff"
+KEY_PR_REFERENCE = "pr_reference"
 KEY_RETRIEVED_MEMORY = "retrieved_memory"
+KEY_EXISTING_PR_COMMENTS = "existing_pr_comments"
 KEY_ANALYSIS = "analysis"
 KEY_COMMENTS = "comments"
 KEY_FORMATTED = "formatted"
 
-# Max blocking comments per review (hard constraint)
-MAX_BLOCKING = 3
+# Max blocking comments per review (hard constraint). Configurable per deployment.
+MAX_BLOCKING = int(os.environ.get("MAX_BLOCKING_COMMENTS", "3"))
+
+# Looks up already-posted comment text for a PR reference (e.g. "owner/repo#12").
+# Production wires this to SQLiteStore.get_review_by_pr; None (default) disables it,
+# e.g. for the CLI harness where there's no PR to look up.
+GetExistingPrComments = Callable[[str], list]
 
 
 def retrieve_step(
     state: dict,
     convention_memory: Any,
     review_history_memory: Any,
+    get_existing_pr_comments: "GetExistingPrComments | None" = None,
 ) -> dict:
-    """Run unified retrieval on the diff snippet and set retrieved_memory."""
+    """Run unified retrieval on the diff snippet and set retrieved_memory. Also looks
+    up comments already posted on this PR (if any), so analyze_step can avoid
+    repeating itself when a new commit is pushed to a PR it already reviewed."""
     diff = state.get(KEY_DIFF) or ""
     snippet = diff[:8000] if len(diff) > 8000 else diff  # cap for embedding
     mem = retrieve(
@@ -38,13 +49,18 @@ def retrieve_step(
         convention_top_k=5,
         past_decisions_top_k=5,
     )
-    return {KEY_RETRIEVED_MEMORY: mem}
+    existing: list = []
+    pr_reference = state.get(KEY_PR_REFERENCE)
+    if get_existing_pr_comments and pr_reference:
+        existing = get_existing_pr_comments(pr_reference)
+    return {KEY_RETRIEVED_MEMORY: mem, KEY_EXISTING_PR_COMMENTS: existing}
 
 
 def analyze_step(state: dict, llm_complete: Callable[[str, str | None], str]) -> dict:
     """Call LLM with diff + memory to produce a structured analysis (list of issues)."""
     diff = state.get(KEY_DIFF) or ""
     mem: RetrievedMemory | None = state.get(KEY_RETRIEVED_MEMORY)
+    existing_comments: list = state.get(KEY_EXISTING_PR_COMMENTS) or []
     conv_text = ""
     past_text = ""
     if mem:
@@ -52,11 +68,21 @@ def analyze_step(state: dict, llm_complete: Callable[[str, str | None], str]) ->
         past_text = "\n".join(
             f"- {p.outcome}: {p.comment_text}" for p in mem.past_decisions[:5]
         )
+    already_flagged_text = "\n".join(f"- {c}" for c in existing_comments[:20])
     system = (
         "You are a code reviewer. Output a JSON array of issues. Each issue: file_path, line_number, severity (nit|warning|blocking), comment_text, suggested_replacement (optional). "
+        "This PR may already have been reviewed before this push -- do not repeat an issue "
+        "listed under 'Already flagged on this PR' unless the exact same unaddressed code is "
+        "still present; focus on what's new or changed. "
         "Only output the JSON array, no other text."
     )
-    prompt = f"Diff:\n{diff[:12000]}\n\nRelevant conventions:\n{conv_text}\n\nPast decisions:\n{past_text}\n\nList issues as JSON array:"
+    prompt = (
+        f"Diff:\n{diff[:12000]}\n\n"
+        f"Relevant conventions:\n{conv_text}\n\n"
+        f"Past decisions:\n{past_text}\n\n"
+        f"Already flagged on this PR (do not repeat):\n{already_flagged_text}\n\n"
+        "List issues as JSON array:"
+    )
     raw = llm_complete(prompt, system)
     # Extract JSON array from response
     analysis = raw.strip()
@@ -89,7 +115,7 @@ def generate_step(state: dict) -> dict:
 
 
 def format_step(state: dict) -> dict:
-    """Enforce max 3 blocking; build ReviewSummary; set formatted ReviewOutput."""
+    """Enforce MAX_BLOCKING; build ReviewSummary; set formatted ReviewOutput."""
     comments: list[Comment] = list(state.get(KEY_COMMENTS) or [])
     blocking = [c for c in comments if c.severity == "blocking"]
     if len(blocking) > MAX_BLOCKING:

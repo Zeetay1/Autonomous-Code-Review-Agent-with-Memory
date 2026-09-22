@@ -13,15 +13,6 @@
     #stats { display: flex; gap: 1rem; flex-wrap: wrap; }
     #stats div { background: #f5f5f5; padding: 0.8rem 1.2rem; border-radius: 6px; }
     #stats div strong { display: block; font-size: 1.2rem; }
-    textarea#try-diff { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 0.85rem; padding: 0.5rem; }
-    .try-controls { margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-    .try-controls button { padding: 0.4rem 0.9rem; cursor: pointer; }
-    #try-status { color: #666; font-size: 0.9rem; }
-    .try-comment { border-left: 4px solid #888; padding: 0.5rem 0.8rem; margin-bottom: 0.5rem; background: #f9f9f9; }
-    .try-comment.blocking { border-color: #b00020; }
-    .try-comment.warning { border-color: #c77700; }
-    .try-comment.nit { border-color: #888; }
-    .try-error { color: #b00020; }
   </style>
 </head>
 <body>
@@ -35,18 +26,6 @@
       <div><strong id="nits">-</strong> Nits</div>
       <div><strong id="pattern-rejections">-</strong> Pattern rejections (total)</div>
     </div>
-  </section>
-  <section>
-    <h2>Try it yourself</h2>
-    <p>Paste a unified diff below and the agent reviews it live. Rate-limited; results are
-    shown only to you, not added to the "Recent reviews" list below.</p>
-    <textarea id="try-diff" rows="10" placeholder="diff --git a/foo.py b/foo.py&#10;--- a/foo.py&#10;+++ b/foo.py&#10;..."></textarea>
-    <div class="try-controls">
-      <button id="try-submit">Review this diff</button>
-      <button id="try-sample" type="button">Load sample diff</button>
-      <span id="try-status"></span>
-    </div>
-    <div id="try-results"></div>
   </section>
   <section>
     <h2>Recent reviews</h2>
@@ -80,71 +59,6 @@
       }
     }
     load();
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    }
-
-    const SAMPLE_DIFF = `diff --git a/src/foo.py b/src/foo.py
-index 1234567..abcdefg 100644
---- a/src/foo.py
-+++ b/src/foo.py
-@@ -1,3 +1,8 @@
-+def process_data(input):
-+    result = []
-+    for x in input:
-+        result.append(x * 2)
-+    return result
-+
-`;
-
-    document.getElementById('try-sample').addEventListener('click', () => {
-      document.getElementById('try-diff').value = SAMPLE_DIFF;
-    });
-
-    document.getElementById('try-submit').addEventListener('click', async () => {
-      const diffEl = document.getElementById('try-diff');
-      const status = document.getElementById('try-status');
-      const results = document.getElementById('try-results');
-      const submitBtn = document.getElementById('try-submit');
-      const diff = diffEl.value;
-      if (!diff.trim()) {
-        status.textContent = 'Paste a diff first.';
-        return;
-      }
-      submitBtn.disabled = true;
-      status.textContent = 'Reviewing... this calls a real LLM and can take 10-20s.';
-      results.innerHTML = '';
-      try {
-        const res = await fetch('/api/try', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ diff }),
-        });
-        const data = await res.json();
-        status.textContent = '';
-        if (!res.ok) {
-          results.innerHTML = `<p class="try-error">${escapeHtml(data.error || 'Something went wrong.')}</p>`;
-          return;
-        }
-        if (!data.comments || data.comments.length === 0) {
-          results.innerHTML = '<p>No issues found.</p>';
-        } else {
-          results.innerHTML = data.comments.map(c => `
-            <div class="try-comment ${escapeHtml(c.severity)}">
-              <strong>${escapeHtml((c.severity || '').toUpperCase())}</strong>
-              &mdash; ${escapeHtml(c.file_path)}:${escapeHtml(c.line_number)}<br>
-              ${escapeHtml(c.comment_text)}
-            </div>
-          `).join('');
-        }
-      } catch (e) {
-        status.textContent = '';
-        results.innerHTML = '<p class="try-error">Request failed.</p>';
-      } finally {
-        submitBtn.disabled = false;
-      }
-    });
   </script>
 </body>
 </html>
