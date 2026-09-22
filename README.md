@@ -11,7 +11,7 @@ even after a human has explicitly rejected it, and it has no way to learn a code
 unwritten conventions beyond what fits in a single prompt. This agent embeds convention
 docs and past review comments into a vector store, retrieves the relevant subset for each
 new diff, and down-weights (and eventually excludes) patterns that have been rejected
-repeatedly — so the agent's behavior visibly improves as it accumulates feedback.
+repeatedly, so the agent's behavior visibly improves as it accumulates feedback.
 
 ## Architecture
 
@@ -66,7 +66,7 @@ GET /dashboard  --> reads SQLiteStore directly (recent reviews, counts by severi
 exclusion). Separately, each PR also remembers its *own* prior comments
 (`SQLiteStore.get_review_by_pr`, threaded into `retrieve_step` as `pr_reference`), purely
 so pushing a second commit to the same PR doesn't re-flag what it already said on the
-first pass — this one resets per PR, it's not a permanent exclusion like the other.
+first pass. This one resets per PR; it's not a permanent exclusion like the other.
 
 ## Tech stack
 
@@ -77,15 +77,15 @@ pytest · Docker.
 
 ## Quickstart
 
-**Docker (recommended — no local Python setup):**
+**Docker (recommended, no local Python setup):**
 
 ```bash
 docker compose up --build
 ```
 
 Then open `http://localhost:8000/dashboard`. The dashboard, `/api/reviews`, and
-`/api/stats` work with no configuration, but start empty until something is reviewed —
-run `python scripts/seed_demo_data.py` (needs `PYTHONPATH=src`) to populate it with a
+`/api/stats` work with no configuration, but start empty until something is reviewed.
+Run `python scripts/seed_demo_data.py` (needs `PYTHONPATH=src`) to populate it with a
 realistic sample PR review, including a pattern already past the rejection threshold.
 No API key needed, since it writes directly to the store rather than calling an LLM.
 
@@ -95,22 +95,22 @@ with `docker run --network none`). Startup takes ~10-15s while it loads the embe
 model into memory; the dashboard and API are fully responsive once
 `Application startup complete` appears in the logs.
 
-**Connecting it to a real GitHub repo** (optional — the dashboard/demo above needs none
+**Connecting it to a real GitHub repo** (optional; the dashboard/demo above needs none
 of this):
 
 1. Copy `.env.example` to `.env` and fill in `GITHUB_TOKEN` (repo scope, or fine-grained
    with Contents: read + Pull requests: read/write) and either `ANTHROPIC_API_KEY` or
    `LLM_PROVIDER=groq` + `GROQ_API_KEY`.
-2. Your instance needs a URL GitHub can actually reach — `localhost` doesn't count. For
+2. Your instance needs a URL GitHub can actually reach; `localhost` doesn't count. For
    local testing, expose it with a tunnel (e.g. `ngrok http 8000` or
    `npx localtunnel --port 8000`); for real use, deploy it somewhere with a stable public
    URL.
 3. On the target repo: **Settings → Webhooks → Add webhook** → Payload URL =
    `https://<your-url>/webhook`, content type `application/json`, event: "Pull requests".
    Set the same value as `GITHUB_WEBHOOK_SECRET` in `.env` so payloads are verified.
-4. Open or push to a PR on that repo — it gets reviewed for real, with inline comments
+4. Open or push to a PR on that repo. It gets reviewed for real, with inline comments
    posted directly on GitHub. (This exact flow is what found and fixed the redirect bug
-   in `GitHubClient.get_pr_diff` — verified against a live PR, not just mocked.)
+   in `GitHubClient.get_pr_diff`, verified against a live PR, not just mocked.)
 
 **Local dev alternative:**
 
@@ -160,7 +160,7 @@ an API key):
 With a real `ANTHROPIC_API_KEY` set, drop `--mock-llm` and Claude reviews the actual diff
 content against retrieved conventions and past-decision memory.
 
-**Feedback-loop demo** — shows the memory actually changing agent behavior: a pattern
+**Feedback-loop demo**: shows the memory actually changing agent behavior. A pattern
 rejected 5 times stops being retrieved at all.
 
 ```bash
@@ -187,34 +187,25 @@ set PYTHONPATH=src           # `export PYTHONPATH=src` on Linux/macOS
 pytest tests/ -v
 ```
 
-36 tests, no network access or API keys required — all LLM calls, embeddings, and Chroma
+35 tests, no network access or API keys required. All LLM calls, embeddings, and Chroma
 storage are mocked/in-memory in the test suite (`tests/conftest.py`). Same command runs
 in CI (`.github/workflows/ci.yml`) on every push/PR to `main`.
 
-## Limitations / what's next
+## Limitations
 
-- **Private repos are untested beyond code review.** `get_pr_diff` fetches the diff
-  directly from `api.github.com` with the diff media type specifically so auth survives
-  (an earlier version used `pr.diff_url`, which redirects to a different host and drops
-  the auth header — see the comment in `github_integration/client.py`). This has been
-  verified end-to-end against a real *public* PR; it hasn't been exercised against an
-  actual private repo, so treat that path as reasoned-through rather than proven.
-- **`sentence-transformers` pulls in `torch`**, which is most of the Docker image's ~2.7GB
-  (down from ~9.3GB by pinning the CPU-only torch build instead of the default wheel,
-  which bundles ~6GB of unused CUDA runtime libs — see `requirements.txt`). Shrinking
-  further would mean swapping local embeddings for a hosted embeddings API (e.g. Voyage
-  or OpenAI embeddings), trading image size for a per-request network dependency.
-- **The webhook trusts `pull_request.base.repo.full_name`** from the payload for routing;
-  this is standard for GitHub's own webhook payloads but means the deployment must bind
-  the webhook secret per-repo (already supported via `GITHUB_WEBHOOK_SECRET`) rather than
-  trusting payload contents alone.
-- **SQLite and Chroma are both local files.** Fine for a single-instance demo; a multi-instance
-  production deployment would need Postgres + a hosted vector store (or Chroma's
-  server mode) instead of `docker-compose.yml`'s single-volume setup.
-- **PR-level dedup only sees comments *this* agent already posted**, read back from
-  SQLite (`get_review_by_pr`) — it has no way to know about comments from a human
-  reviewer or a different tool on the same PR.
+- **Private repos are untested.** `get_pr_diff` fetches from `api.github.com` directly
+  (not `pr.diff_url`, which redirects and drops the auth header), so auth should
+  survive, but this is only verified against a public PR, not an actual private repo.
+- **`torch` still dominates the Docker image (~2.7GB)**, even after pinning the CPU-only
+  build (down from ~9.3GB, see `requirements.txt`). Shrinking further means swapping
+  local embeddings for a hosted API, trading image size for a network dependency.
+- **The webhook trusts `pull_request.base.repo.full_name`** for routing, standard for
+  GitHub payloads, but means each deployment must set its own `GITHUB_WEBHOOK_SECRET`
+  rather than trusting payload contents alone.
+- **SQLite and Chroma are local files**, fine for one instance; multi-instance production
+  would need Postgres and a hosted vector store instead.
+- **PR-level dedup only sees this agent's own past comments** (via SQLite), not a human
+  reviewer's or another tool's.
 
 `MAX_BLOCKING_COMMENTS` (default 3) and `REJECTION_THRESHOLD` (default 5) are
-configurable per deployment via environment variables (`agent/steps.py`,
-`memory/review_history.py`) rather than hardcoded.
+configurable via environment variables, not hardcoded.
