@@ -16,22 +16,23 @@ class GitHubClient:
         self._gh = Github(token) if token else None
 
     def get_pr_diff(self, owner: str, repo: str, pr_number: int) -> str:
-        """Fetch the unified diff for a PR. Uses diff_url with auth."""
-        if not self._gh:
+        """Fetch the unified diff for a PR via the REST API's diff media type.
+
+        Deliberately does NOT use pr.diff_url (github.com/.../pull/N.diff): that
+        always 302s to patch-diff.githubusercontent.com, and httpx correctly strips
+        the Authorization header on that cross-host redirect, so it would silently
+        only work for public repos. Requesting the diff directly from api.github.com
+        stays on one host, so auth is preserved and this works for private repos too.
+        """
+        if not self._token:
             return ""
-        r = self._gh.get_repo(f"{owner}/{repo}")
-        pr = r.get_pull(pr_number)
-        diff_url = pr.diff_url
-        headers = {}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        with httpx.Client(follow_redirects=True) as client:
-            # diff_url (github.com/.../pull/N.diff) always 302s to
-            # patch-diff.githubusercontent.com; httpx strips Authorization on a
-            # cross-host redirect (correct default), so this only fully works
-            # unauthenticated -- fine for public repos, insufficient for private
-            # ones (see README limitations).
-            resp = client.get(diff_url, headers=headers)
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github.v3.diff",
+        }
+        with httpx.Client() as client:
+            resp = client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.text
 
