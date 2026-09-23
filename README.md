@@ -51,15 +51,17 @@ GET /dashboard  --> reads SQLiteStore directly (recent reviews, counts by severi
 
 **Key components**
 
-| Component | Responsibility |
-|---|---|
-| `agent/graph.py`, `agent/steps.py` | LangGraph state machine: retrieve → analyze → generate → format |
-| `memory/conventions.py` | Chunks project docs by `##`/`###` section, embeds and indexes them in Chroma |
-| `memory/review_history.py` | Stores past comments with outcomes; down-weights rejected patterns (`0.2x`) vs accepted (`1.0x`) and excludes a pattern once it hits 5 rejections |
-| `memory/retrieval.py` | Single entry point that merges both memory queries for a diff snippet |
-| `persistence/sqlite_store.py` | Source of truth for comments, outcomes, and per-pattern rejection counts |
-| `github_integration/` | Webhook signature verification, PR event parsing, diff fetch, inline comment posting |
-| `api/app.py` | FastAPI app: `/webhook`, `/api/feedback`, `/api/reviews`, `/api/stats`, `/dashboard` |
+
+| Component                          | Responsibility                                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent/graph.py`, `agent/steps.py` | LangGraph state machine: retrieve → analyze → generate → format                                                                                   |
+| `memory/conventions.py`            | Chunks project docs by `##`/`###` section, embeds and indexes them in Chroma                                                                      |
+| `memory/review_history.py`         | Stores past comments with outcomes; down-weights rejected patterns (`0.2x`) vs accepted (`1.0x`) and excludes a pattern once it hits 5 rejections |
+| `memory/retrieval.py`              | Single entry point that merges both memory queries for a diff snippet                                                                             |
+| `persistence/sqlite_store.py`      | Source of truth for comments, outcomes, and per-pattern rejection counts                                                                          |
+| `github_integration/`              | Webhook signature verification, PR event parsing, diff fetch, inline comment posting                                                              |
+| `api/app.py`                       | FastAPI app: `/webhook`, `/api/feedback`, `/api/reviews`, `/api/stats`, `/dashboard`                                                              |
+
 
 **Two independent kinds of memory:** `ReviewHistoryMemory` tracks accepted/rejected
 *patterns* permanently, across every PR in the repo (the `REJECTION_THRESHOLD`
@@ -99,17 +101,17 @@ model into memory; the dashboard and API are fully responsive once
 of this):
 
 1. Copy `.env.example` to `.env` and fill in `GITHUB_TOKEN` (repo scope, or fine-grained
-   with Contents: read + Pull requests: read/write) and either `ANTHROPIC_API_KEY` or
+  with Contents: read + Pull requests: read/write) and either `ANTHROPIC_API_KEY` or
    `LLM_PROVIDER=groq` + `GROQ_API_KEY`.
 2. Your instance needs a URL GitHub can actually reach; `localhost` doesn't count. For
-   local testing, expose it with a tunnel (e.g. `ngrok http 8000` or
+  local testing, expose it with a tunnel (e.g. `ngrok http 8000` or
    `npx localtunnel --port 8000`); for real use, deploy it somewhere with a stable public
    URL.
 3. On the target repo: **Settings → Webhooks → Add webhook** → Payload URL =
-   `https://<your-url>/webhook`, content type `application/json`, event: "Pull requests".
+  `https://<your-url>/webhook`, content type `application/json`, event: "Pull requests".
    Set the same value as `GITHUB_WEBHOOK_SECRET` in `.env` so payloads are verified.
 4. Open or push to a PR on that repo. It gets reviewed for real, with inline comments
-   posted directly on GitHub. (This exact flow is what found and fixed the redirect bug
+  posted directly on GitHub. (This exact flow is what found and fixed the redirect bug
    in `GitHubClient.get_pr_diff`, verified against a live PR, not just mocked.)
 
 **Local dev alternative:**
@@ -122,6 +124,8 @@ pip install -r requirements.txt
 set PYTHONPATH=src          # `export PYTHONPATH=src` on Linux/macOS
 uvicorn code_review_agent.api.app:app --reload
 ```
+
+
 
 ## Example usage
 
@@ -180,6 +184,8 @@ curl -X POST http://localhost:8000/api/feedback \
   -d '{"github_comment_id": "123456789", "outcome": "rejected"}'
 ```
 
+
+
 ## How to run tests
 
 ```bash
@@ -190,22 +196,6 @@ pytest tests/ -v
 35 tests, no network access or API keys required. All LLM calls, embeddings, and Chroma
 storage are mocked/in-memory in the test suite (`tests/conftest.py`). Same command runs
 in CI (`.github/workflows/ci.yml`) on every push/PR to `main`.
-
-## Limitations
-
-- **Private repos are untested.** `get_pr_diff` fetches from `api.github.com` directly
-  (not `pr.diff_url`, which redirects and drops the auth header), so auth should
-  survive, but this is only verified against a public PR, not an actual private repo.
-- **`torch` still dominates the Docker image (~2.7GB)**, even after pinning the CPU-only
-  build (down from ~9.3GB, see `requirements.txt`). Shrinking further means swapping
-  local embeddings for a hosted API, trading image size for a network dependency.
-- **The webhook trusts `pull_request.base.repo.full_name`** for routing, standard for
-  GitHub payloads, but means each deployment must set its own `GITHUB_WEBHOOK_SECRET`
-  rather than trusting payload contents alone.
-- **SQLite and Chroma are local files**, fine for one instance; multi-instance production
-  would need Postgres and a hosted vector store instead.
-- **PR-level dedup only sees this agent's own past comments** (via SQLite), not a human
-  reviewer's or another tool's.
 
 `MAX_BLOCKING_COMMENTS` (default 3) and `REJECTION_THRESHOLD` (default 5) are
 configurable via environment variables, not hardcoded.
